@@ -140,16 +140,18 @@ test('Excel exports only one formatted sheet with safe contiguous merges and mix
   await workbook.xlsx.readFile((await download.path())!);
   expect(workbook.worksheets).toHaveLength(1);
   const sheet = workbook.getWorksheet('PD 定义')!;
-  expect(sheet.getRow(1).values).toEqual([undefined, ...workspace.fields.map((field) => field.label), '方案版本']);
-  expect(sheet.model.merges.sort()).toEqual(['B2:B4', 'D2:D3', 'D4:D5', 'I2:I6'].sort());
-  expect(sheet.getCell('I2').text).toBe('V2.0 / 2026-01-09');
-  expect(sheet.getCell('I6').master.address).toBe('I2');
+  expect(sheet.getRow(1).values).toEqual([
+    undefined, '方案版本', ...workspace.fields.filter((field) => field.name !== 'position').map((field) => field.label),
+  ]);
+  expect(sheet.model.merges.sort()).toEqual(['A2:A6', 'B2:B4', 'D2:D3', 'D4:D5'].sort());
+  expect(sheet.getCell('A2').text).toBe('V2.0 / 2026-01-09');
+  expect(sheet.getCell('A6').master.address).toBe('A2');
   expect(sheet.getCell('B6').isMerged).toBe(false);
   expect(sheet.getCell('D6').text).toBe('中文 standard');
   expect(sheet.getCell('D6').isMerged).toBe(false);
   expect(sheet.getCell('B2').text).toBe('1.知情同意');
   expect(sheet.getCell('C2').font.name).toBe('Times New Roman');
-  expect(sheet.getCell('B1').font.name).toBe('微软雅黑');
+  expect(sheet.getCell('A1').font.name).toBe('微软雅黑');
   const value = sheet.getCell('D2').value as ExcelJS.CellRichTextValue;
   expect(value.richText.map((run) => [run.text, run.font?.name, run.font?.size])).toEqual([
     ['中文', '微软雅黑', 10], [' standard', 'Times New Roman', 10],
@@ -159,7 +161,7 @@ test('Excel exports only one formatted sheet with safe contiguous merges and mix
     expect(cell.alignment.vertical).toBe('top');
     expect(cell.font.size).toBe(10);
   }));
-  expect(sheet.autoFilter).toBe('A1:I1');
+  expect(sheet.autoFilter).toBe('A1:H1');
 });
 
 test('Excel export rejects missing or invalid saved version metadata clearly', async ({ page }) => {

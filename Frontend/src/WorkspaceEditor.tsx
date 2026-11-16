@@ -16,7 +16,7 @@ const tabs: Array<[Tab, string]> = [
 ];
 const tabIcons: Record<Tab, IconName> = { protocol: 'file', categories: 'settings', facts: 'list', fields: 'settings', definitions: 'list' };
 const metadataLabels: Array<[keyof ProtocolMetadata, string]> = [
-  ['title', '方案标题'], ['protocol_no', '方案编号'], ['sponsor', '申办方'],
+  ['title', '方案标题'], ['protocol_no', '方案编号'], ['sponsor', '申办者'],
   ['version', '版本'], ['version_date', '版本日期'],
 ];
 const metadataOf = (project: ProjectInfo): ProtocolMetadata => ({

@@ -31,11 +31,14 @@ export async function definitionsWorkbook(rows: DefinitionOut[], fields: FieldUp
   const { default: ExcelJS } = await import('exceljs');
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet('PD 定义', { views: [{ state: 'frozen', ySplit: 1 }] });
-  sheet.columns = [...definitionColumns(fields).map((column) => ({ header: column.label, key: column.name, width: column.width })),
-    { header: '方案版本', key: 'protocol_version', width: 30 }];
-  rows.forEach((row, index) => {
+  sheet.columns = [
+    { header: '方案版本', key: 'protocol_version', width: 30 },
+    ...definitionColumns(fields).filter((column) => column.name !== 'position')
+      .map((column) => ({ header: column.label, key: column.name, width: column.width })),
+  ];
+  rows.forEach((row) => {
     const cells = sheet.addRow({
-      position: index + 1, pd_category_name: row.pd_category_name, pd_ord: row.pd_ord,
+      pd_category_name: row.pd_category_name, pd_ord: row.pd_ord,
       requirements: row.requirements, description: row.description,
       review_method: row.review_method ?? '', severity: row.severity ?? '', note: row.note ?? '',
       protocol_version: version,
