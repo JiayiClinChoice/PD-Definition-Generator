@@ -10,6 +10,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Integer,
     String,
+    Text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -127,6 +128,33 @@ class PDCategory(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+
+
+class ProjectPrompt(Base):
+    __tablename__ = "project_prompts"
+
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True
+    )
+    key: Mapped[str] = mapped_column(String(40), primary_key=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class AIInteraction(Base):
+    __tablename__ = "ai_interactions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    operation: Mapped[str] = mapped_column(String(40), nullable=False)
+    model: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    conversation: Mapped[list[dict]] = mapped_column(JSON, nullable=False)
+    response: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class Fact(Base):

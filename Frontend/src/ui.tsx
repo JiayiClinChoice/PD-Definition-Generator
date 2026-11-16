@@ -1,8 +1,10 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react';
 
-export type IconName = 'flask' | 'file' | 'settings' | 'list' | 'search' | 'plus' | 'arrow' | 'back' | 'refresh' | 'edit' | 'trash' | 'info' | 'close' | 'upload' | 'sparkles' | 'download' | 'check' | 'top' | 'bottom' | 'chevron' | 'send';
+export type IconName = 'flask' | 'file' | 'settings' | 'list' | 'search' | 'plus' | 'arrow' | 'back' | 'refresh' | 'edit' | 'trash' | 'info' | 'close' | 'upload' | 'sparkles' | 'download' | 'check' | 'top' | 'bottom' | 'chevron' | 'send' | 'prompt' | 'eye';
 
 const paths: Record<IconName, ReactNode> = {
+  prompt: <><path d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2zM7 8h10M7 12h6" /></>,
+  eye: <><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></>,
   chevron: <path d="m6 9 6 6 6-6" />,
   send: <path d="M12 20V4m-6 6 6-6 6 6" />,
   top: <path d="M5 4h14M12 20V8m-5 5 5-5 5 5" />,

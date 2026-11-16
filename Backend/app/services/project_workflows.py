@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import SQLAlchemyError
 
 from ai.service import (
+    AIRequestContext,
     delete_file,
     generate_definition,
     regenerate_definition,
@@ -26,7 +27,9 @@ from database.domain_services import (
     set_facts,
     set_validate_status,
 )
-from schemas import DefinitionOutList, FactOutList
+from schemas import DefinitionOutList, FactOutList, PromptPreview, PromptPreviewRequest
+from ai.conversation import build_conversation
+from database.prompt_services import load_prompts
 
 from app.api.dependencies import project_agent_operation_guard, require_project_with_file
 
@@ -54,11 +57,12 @@ async def attach_and_validate_protocol(
             project = await get_project_by_id(db, project_id, user_id)
             if project.file_id:
                 raise HTTPException(409, "此项目已经关联方案文件。")
+            context = AIRequestContext(db, project_id, await load_prompts(db, project_id))
         uploaded_file_id = await upload_file(client, file)
 
         try:
-            validate_result = await validate_protocol(client, uploaded_file_id)
-        except (HTTPException, ValueError):
+            validate_result = await validate_protocol(client, uploaded_file_id, context=context)
+        except (HTTPException, ValueError, SQLAlchemyError):
             if uploaded_file_id:
                 await cleanup_uploaded_file(client, uploaded_file_id)
             raise
@@ -90,7 +94,8 @@ async def extract_and_save_facts(
         async with db.begin():
             project = await require_project_with_file(db, project_id, user_id)
             categories = await get_pd_categories_json(db, project_id, user_id)
-        result = await search_fact(client, project.file_id, categories)
+            context = AIRequestContext(db, project_id, await load_prompts(db, project_id))
+        result = await search_fact(client, project.file_id, categories, context=context)
         await set_facts(db, project_id, user_id, result)
         return result
 
@@ -110,7 +115,8 @@ async def revise_and_save_facts(
             facts = await get_facts_dict(db, project_id, user_id)
             if facts["all"] == "[]":
                 raise HTTPException(409, "请先提取事实。")
-        result = await revise_fact(client, project.file_id, categories, facts, requirements)
+            context = AIRequestContext(db, project_id, await load_prompts(db, project_id))
+        result = await revise_fact(client, project.file_id, categories, facts, requirements, context=context)
         await set_facts(db, project_id, user_id, result)
         return result
 
@@ -130,7 +136,8 @@ async def generate_and_save_definitions(
             fields = await get_fields_json(db, project_id, user_id)
             if facts["all"] == "[]":
                 raise HTTPException(409, "请先提取并保存事实。")
-        result = await generate_definition(client, project.file_id, categories, facts, fields)
+            context = AIRequestContext(db, project_id, await load_prompts(db, project_id))
+        result = await generate_definition(client, project.file_id, categories, facts, fields, context=context)
         await set_definitions(db, project_id, user_id, result)
         return result
 
@@ -152,6 +159,7 @@ async def revise_and_save_definitions(
             definitions = await get_definition_dict(db, project_id, user_id)
             if definitions["all"] == "[]":
                 raise HTTPException(409, "请先生成定义。")
+            context = AIRequestContext(db, project_id, await load_prompts(db, project_id))
         result = await regenerate_definition(
             client,
             project.file_id,
@@ -160,6 +168,31 @@ async def revise_and_save_definitions(
             fields,
             definitions,
             requirements,
+            context=context,
         )
         await set_definitions(db, project_id, user_id, result)
         return result
+
+
+async def preview_ai_request(
+    db: AsyncSession, project_id: int, user_id: int, request: PromptPreviewRequest,
+) -> PromptPreview:
+    async with db.begin():
+        project = await get_project_by_id(db, project_id, user_id)
+        if request.operation == "validate":
+            if project.file_id:
+                raise HTTPException(409, "此项目已经关联方案文件。")
+            return build_conversation(request.prompts, "validate", "<待上传的方案文件>")
+        project_with_file = await require_project_with_file(db, project_id, user_id)
+        categories = await get_pd_categories_json(db, project_id, user_id)
+        facts = await get_facts_dict(db, project_id, user_id)
+        fields = await get_fields_json(db, project_id, user_id)
+        definitions = await get_definition_dict(db, project_id, user_id)
+        if request.operation in {"revise_facts", "generate", "revise_definitions"} and facts["all"] == "[]":
+            raise HTTPException(409, "请先提取并保存事实。")
+        if request.operation == "revise_definitions" and definitions["all"] == "[]":
+            raise HTTPException(409, "请先生成定义。")
+        return build_conversation(
+            request.prompts, request.operation, project_with_file.file_id,
+            categories, facts, fields, definitions, request.requirements,
+        )

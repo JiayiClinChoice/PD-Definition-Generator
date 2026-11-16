@@ -5,7 +5,29 @@ from datetime import datetime
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import Fact, FieldProtocol, PDCategory, PDDefinition, Project, User
+from .models import AIInteraction, Fact, FieldProtocol, PDCategory, PDDefinition, Project, ProjectPrompt, User
+
+
+async def list_project_prompts(db: AsyncSession, project_id: int) -> list[ProjectPrompt]:
+    return list((await db.scalars(
+        select(ProjectPrompt).where(ProjectPrompt.project_id == project_id)
+    )).all())
+
+
+async def upsert_project_prompts(
+    db: AsyncSession, project_id: int, prompts: dict[str, str],
+) -> None:
+    for key, content in prompts.items():
+        await db.merge(ProjectPrompt(project_id=project_id, key=key, content=content))
+
+
+async def list_project_interactions(
+    db: AsyncSession, project_id: int, *, offset: int, limit: int,
+) -> list[AIInteraction]:
+    return list((await db.scalars(
+        select(AIInteraction).where(AIInteraction.project_id == project_id)
+        .order_by(AIInteraction.id.desc()).offset(offset).limit(limit)
+    )).all())
 
 
 async def get_user_by_key(db: AsyncSession, user_key: str) -> User | None:

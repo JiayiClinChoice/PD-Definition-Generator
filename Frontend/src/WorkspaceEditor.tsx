@@ -4,9 +4,10 @@ import type { RunAction } from './AppBoard';
 import { downloadDefinitions } from './export';
 import { Icon, Modal, type IconName } from './ui';
 import { DragHandle, SortableRow, SortableRows, moveRow, stripKeys, withKey, withKeys } from './SortableRows';
-import { AutoTextarea, ScrollNavigation } from './EditorControls';
+import { AutoTextarea, PreviewSplitButton, ScrollNavigation } from './EditorControls';
 import { DefinitionsTable } from './DefinitionsTable';
 import { useAppDialog } from './AppDialogs';
+import PromptDialog, { type PromptDialogMode } from './PromptDialog';
 import type { DefinitionOut, FactOut, FieldUpdate, PDCategoryUpdate, ProjectInfo, ProtocolMetadata, WorkspaceData } from './types';
 
 type Tab = 'protocol' | 'categories' | 'facts' | 'fields' | 'definitions';
@@ -55,6 +56,7 @@ export default function WorkspaceEditor({ data, busy, status, run, onDirtyChange
   const [categoryFilter, setCategoryFilter] = useState('');
   const [renaming, setRenaming] = useState(false);
   const [focusKey, setFocusKey] = useState('');
+  const [promptDialog, setPromptDialog] = useState<PromptDialogMode | null>(null);
   const id = project.id;
   const valid = project.file_valid === 1;
   const feedback = status.text && <div className={`notice operation-notice ${status.error ? 'error' : ''} ${busy ? 'processing' : ''}`} role={status.error ? 'alert' : 'status'} aria-live="polite">
@@ -108,10 +110,14 @@ export default function WorkspaceEditor({ data, busy, status, run, onDirtyChange
   function definitionPatch(index: number, patch: Partial<DefinitionOut>) {
     setDefinitions((items) => items.map((item, i) => i === index ? { ...item, checked: 0, ...patch } : item)); mark('definitions');
   }
-  async function canGenerate(section: 'facts' | 'definitions') {
+  async function requireSavedUpstream(section: 'facts' | 'definitions') {
     if (dirty.includes('categories') || (section === 'definitions' && (dirty.includes('fields') || dirty.includes('facts')))) {
       await notify('请先保存上游分类、事实或字段规则的修改，再运行 AI。'); return false;
     }
+    return true;
+  }
+  async function canGenerate(section: 'facts' | 'definitions') {
+    if (!await requireSavedUpstream(section)) return false;
     return !(section === 'facts' ? facts.length : definitions.length) ||
       await confirm('此操作会替换当前列表，包括未保存修改，确定继续？', { title: '替换当前列表', confirmLabel: '继续替换' });
   }
@@ -123,11 +129,20 @@ export default function WorkspaceEditor({ data, busy, status, run, onDirtyChange
       clean(section);
     }, '生成完成并已保存');
   }
+  async function previewRequest(section: 'facts' | 'definitions', revise = false) {
+    if (!await requireSavedUpstream(section)) return;
+    setPromptDialog({
+      kind: 'preview',
+      operation: section === 'facts' ? revise ? 'revise_facts' : 'extract' : revise ? 'revise_definitions' : 'generate',
+      requirements: revise ? section === 'facts' ? factRequest.trim() : definitionRequest.trim() : undefined,
+    });
+  }
 
   return <>
     <div className="workspace-head">
       <div className="workspace-title"><button className="icon-button back-button" aria-label="返回项目列表" title="返回项目列表" onClick={onBack}><Icon name="back" /></button><h1>{project.name}</h1></div>
       <div className="compact-actions">
+        <button className="icon-button" aria-label="管理项目提示词" title="预览和修改项目提示词" disabled={busy} onClick={() => setPromptDialog({ kind: 'edit' })}><Icon name="prompt" /></button>
         <button className="icon-button" aria-label="重命名项目" title="重命名" disabled={busy} onClick={() => { setName(project.name); setRenaming(true); }}><Icon name="edit" /></button>
         <button className="icon-button" aria-label="刷新工作区" title="刷新" disabled={busy} onClick={onRefresh}><Icon name="refresh" /></button>
         <button className="icon-button danger-text" aria-label="删除项目" title="删除项目" disabled={busy} onClick={async () => {
@@ -248,7 +263,10 @@ export default function WorkspaceEditor({ data, busy, status, run, onDirtyChange
           <div className="compact-actions">
           <button className="button secondary" disabled={busy || (tab === 'facts' && (!categories.length || dirty.includes('categories')))} onClick={() => tab === 'facts' ? insertFact(facts.length - 1) : insertDefinition(definitions.length - 1)}><Icon name="plus" size={16} />{tab === 'facts' ? '添加事实' : '添加定义'}</button>
           {tab === 'definitions' && <button className="button secondary" disabled={busy || !definitions.length || dirty.includes('definitions')} onClick={() => void run('正在导出 Excel…', () => downloadDefinitions(definitions, id, fields, project), 'Excel 已导出')}><Icon name="download" size={16} />导出 Excel</button>}
-          <button className="button secondary" aria-label={tab === 'facts' ? '提取事实' : '生成定义'} disabled={busy || !valid || (tab === 'definitions' && !facts.length)} onClick={() => generate(tab)}><Icon name="sparkles" size={16} />{tab === 'facts' ? facts.length ? '重新提取' : '提取事实' : definitions.length ? '重新生成' : '生成定义'}</button>
+          <PreviewSplitButton actionLabel={tab === 'facts' ? '提取事实' : '生成定义'}
+            label={tab === 'facts' ? facts.length ? '重新提取' : '提取事实' : definitions.length ? '重新生成' : '生成定义'}
+            disabled={busy || !valid || (tab === 'definitions' && !facts.length)}
+            onRun={() => { void generate(tab); }} onPreview={() => { void previewRequest(tab); }} />
           </div>
         </div>
         {!valid ? <p className="notice warning">请先上传有效方案。</p>
@@ -256,6 +274,10 @@ export default function WorkspaceEditor({ data, busy, status, run, onDirtyChange
         <details className="ai-panel" open><summary><Icon name="sparkles" size={17} /><strong>AI 调整</strong><span className="ai-hint">描述你的修改意图，让 AI 优化当前结果</span><span className="ai-toggle"><span className="sr-only when-open">收起</span><span className="sr-only when-closed">展开</span><Icon name="chevron" size={20} /></span></summary><div className="action-row">
           <textarea rows={2} aria-label={tab === 'facts' ? '事实修订要求' : '定义修订要求'} placeholder="描述希望补充、删减或调整的内容…" value={tab === 'facts' ? factRequest : definitionRequest} disabled={busy}
             onChange={(event) => tab === 'facts' ? setFactRequest(event.target.value) : setDefinitionRequest(event.target.value)} />
+          <div className="ai-request-actions">
+          <button type="button" className="icon-button ai-preview" aria-label={tab === 'facts' ? '预览事实修订提示词' : '预览定义修订提示词'} title="预览即将提交的提示词"
+            disabled={busy || !valid || !(tab === 'facts' ? facts.length && factRequest.trim() : definitions.length && definitionRequest.trim())}
+            onClick={() => { void previewRequest(tab, true); }}><Icon name="eye" size={18} /></button>
           <button className="ai-send" aria-label={tab === 'facts' ? '提交事实修订' : '提交定义修订'} title="发送修订要求" disabled={busy || !valid || !(tab === 'facts' ? facts.length && factRequest.trim() : definitions.length && definitionRequest.trim())} onClick={async () => {
             const section = tab;
             if (!await canGenerate(section)) return;
@@ -265,6 +287,7 @@ export default function WorkspaceEditor({ data, busy, status, run, onDirtyChange
               clean(section);
             }, '修订完成并已保存');
           }}><Icon name="send" size={20} /></button>
+          </div>
         </div></details>
         <div className="result-filters"><label className="search-field"><Icon name="search" /><input aria-label="搜索结果" placeholder={tab === 'facts' ? '搜索事实、分类或来源…' : '搜索编号、标准、描述或备注…'} value={filter} onChange={(event) => setFilter(event.target.value)} /></label><select aria-label="筛选分类" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option value="">全部分类</option>{categories.map((category) => <option key={category.ord} value={category.name}>{category.name}</option>)}</select></div>
         <form className="editor-form" onInvalid={() => { setFilter(''); setCategoryFilter(''); }} onSubmit={(event) => {
@@ -310,6 +333,7 @@ export default function WorkspaceEditor({ data, busy, status, run, onDirtyChange
       </>}
     </section>
     {tab !== 'protocol' && <ScrollNavigation />}
+    {promptDialog && <PromptDialog projectId={id} mode={promptDialog} onClose={() => setPromptDialog(null)} />}
     {renaming && <Modal title="重命名项目" busy={busy} onClose={() => setRenaming(false)}><form className="editor-form" onSubmit={(event) => submit(event, '正在重命名…', async () => {
       updateProject(await api.renameProject(id, name.trim())); setRenaming(false);
     }, '项目已重命名')}><label>项目名称<input autoFocus aria-label="重命名项目" required maxLength={200} value={name} disabled={busy} onChange={(event) => setName(event.target.value)} /></label><div className="form-footer"><button type="button" className="button secondary" disabled={busy} onClick={() => setRenaming(false)}>取消</button><button className="button primary" disabled={busy || !name.trim() || name.trim() === project.name}>保存名称</button></div></form></Modal>}

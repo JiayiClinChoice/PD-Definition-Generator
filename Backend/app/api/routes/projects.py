@@ -8,7 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from configs import settings
 from database import get_db
-from database.models import Project
+from database.models import AIInteraction, Project
+from database.prompt_services import get_prompts, save_prompts, list_interactions
 from database.domain_services import (
     get_all_projects,
     get_project_by_id,
@@ -22,6 +23,10 @@ from database.domain_services import (
     save_manual_results,
 )
 from schemas import (
+    AIInteractionOut,
+    ProjectPrompts,
+    PromptPreview,
+    PromptPreviewRequest,
     DefinitionOutList,
     FactOutList,
     FieldUpdateList,
@@ -37,6 +42,7 @@ from app.api.dependencies import (
     get_client, get_current_user_id, project_agent_operation_guard, require_client_header,
 )
 from app.services.project_workflows import (
+    preview_ai_request,
     attach_and_validate_protocol,
     extract_and_save_facts,
     generate_and_save_definitions,
@@ -53,6 +59,46 @@ ALLOWED_CONTENT_TYPES = {
     "text/markdown",
     "text/plain",
 }
+
+
+@router.get("/project/{project_id}/prompts", response_model=ProjectPrompts)
+async def get_project_prompts(
+    project_id: int,
+    db: AsyncSession = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+) -> ProjectPrompts:
+    return await get_prompts(db, project_id, user_id)
+
+
+@router.put("/project/{project_id}/prompts", response_model=ProjectPrompts)
+async def update_project_prompts(
+    project_id: int,
+    prompts: ProjectPrompts,
+    db: AsyncSession = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+) -> ProjectPrompts:
+    return await save_prompts(db, project_id, user_id, prompts)
+
+
+@router.post("/project/{project_id}/prompt_preview", response_model=PromptPreview)
+async def preview_project_prompts(
+    project_id: int,
+    request: PromptPreviewRequest,
+    db: AsyncSession = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+) -> PromptPreview:
+    return await preview_ai_request(db, project_id, user_id, request)
+
+
+@router.get("/project/{project_id}/ai_interactions", response_model=list[AIInteractionOut])
+async def get_project_interactions(
+    project_id: int,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+) -> list[AIInteraction]:
+    return await list_interactions(db, project_id, user_id, offset=offset, limit=limit)
 
 
 @router.get("/projects", response_model=list[ProjectInfoOut])

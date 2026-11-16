@@ -134,6 +134,42 @@ curl.exe -X POST "http://127.0.0.1:8001/project/1/attach" `
 Tables are created automatically at startup, including the account/session tables.
 Legacy header-only identities are not automatically claimable through registration.
 
+### Project prompts and AI interaction history
+
+- `project_prompts` stores six templates per project: `system`, `validation`,
+  `extract`, `revise_facts`, `generate`, and `revise_definitions`. New projects
+  receive defaults from `ai/prompt.py` in the project-creation transaction.
+  Startup backfills missing templates for existing projects without overwriting
+  customized values. No existing table columns need to be changed.
+- `GET /project/{id}/prompts` reads the templates; `PUT` at the same path saves
+  the complete template object. Ownership and the project AI lock apply.
+  Templates use `$variable` / `${variable}` syntax. Required context variables
+  must be retained, unknown variables are rejected, and literal `$` is `$$`.
+- `POST /project/{id}/prompt_preview` accepts `{operation, prompts, requirements}`
+  and returns `{instructions, messages}` without invoking AI or saving changes.
+  Operations: `validate`, `extract`, `revise_facts`, `generate`,
+  `revise_definitions`. Revision operations require `requirements`.
+  Preview and sending share the same conversation builder. Before upload,
+  validation previews use a file-ID placeholder; the UI names the selected file.
+- `ai_interactions` stores one row per application AI request, including project,
+  operation, model, UTC start time, integer `duration_ms`, status
+  (`pending`/`completed`/`failed`), structured `conversation`, raw JSON `response`
+  and error text. Conversation includes the system instruction, all request
+  turns, and returned output items (including refusals/reasoning when supplied).
+  File attachments are referenced by file ID, not duplicated as document text.
+  Raw response data is saved before structured parsing, including parsing failures.
+  File upload/deletion calls are not conversational AI requests.
+- Pending rows are committed before network I/O; completion/failure is committed
+  independently of saving business results. Duration covers the AI call,
+  SDK retries and response parsing, not upload or result persistence. Process
+  termination may leave a `pending` row with null duration.
+- `GET /project/{id}/ai_interactions?offset=0&limit=20` reads history newest first
+  (maximum limit 100), restricted to the project owner. Deleting a project also
+  deletes its prompts and interaction history.
+
+Conversation history may contain protocol and study information. Include these
+tables in your access-control, backup and data-retention policies.
+
 ## Tests
 
 ```powershell

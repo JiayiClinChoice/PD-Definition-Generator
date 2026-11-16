@@ -8,6 +8,9 @@ import type {
   ProtocolMetadata,
   User,
   WorkspaceData,
+  ProjectPrompts,
+  AIOperation,
+  PromptPreview,
 } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api';
@@ -51,6 +54,24 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
+  getPrompts(projectId: number) {
+    return request<ProjectPrompts>(`/project/${projectId}/prompts`);
+  },
+
+  savePrompts(projectId: number, prompts: ProjectPrompts) {
+    return request<ProjectPrompts>(`/project/${projectId}/prompts`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(prompts),
+    });
+  },
+
+  previewPrompts(projectId: number, operation: AIOperation, prompts: ProjectPrompts, requirements: string) {
+    return request<PromptPreview>(`/project/${projectId}/prompt_preview`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ operation, prompts, requirements }),
+    });
+  },
+
   me(signal?: AbortSignal) {
     return request<User>('/auth/me', { signal });
   },

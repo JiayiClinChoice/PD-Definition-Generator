@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from configs import settings
+from ai.prompt import default_prompts
 from schemas import (
     DefinitionOutList,
     FactOutList,
@@ -19,7 +20,7 @@ from schemas import (
 )
 
 from .default import DEFAULT_FIELD_PROTOCOL, DEFAULT_PD_CATEGORIES
-from .models import Fact, FieldProtocol, PDCategory, PDDefinition, Project
+from .models import Fact, FieldProtocol, PDCategory, PDDefinition, Project, ProjectPrompt
 from .repositories import (
     add_project,
     add_user,
@@ -159,6 +160,11 @@ async def initialize_project(db: AsyncSession, name: str, user_id: int) -> Proje
         project.pd_categories = [PDCategory(**item) for item in DEFAULT_PD_CATEGORIES]
         project.field_protocol = [FieldProtocol(**item) for item in DEFAULT_FIELD_PROTOCOL]
         await add_project(db, project)
+        await db.flush()
+        db.add_all([
+            ProjectPrompt(project_id=project.id, key=key, content=content)
+            for key, content in default_prompts().items()
+        ])
     return project
 
 

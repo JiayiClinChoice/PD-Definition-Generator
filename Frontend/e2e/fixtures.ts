@@ -1,5 +1,15 @@
 import type { Page } from '@playwright/test';
 import type { WorkspaceData } from '../src/types';
+import type { ProjectPrompts } from '../src/types';
+
+export const initialPrompts: ProjectPrompts = {
+  system: 'Return JSON.',
+  validation: 'Validate the protocol.',
+  extract: 'Extract facts: $categories',
+  revise_facts: 'Revise: $requirements; keep $checked_facts',
+  generate: 'Generate: $field_protocol',
+  revise_definitions: 'Revise: $requirements; keep $checked_definitions',
+};
 
 export async function acceptConfirmation(page: Page, button: string) {
   await page.getByRole('dialog').getByRole('button', { name: button, exact: true }).click();
@@ -35,6 +45,9 @@ export const initialWorkspace: WorkspaceData = {
 
 export async function mockWorkspace(page: Page) {
   let workspace = structuredClone(initialWorkspace);
+  const projectPrompts = new Map<number, ProjectPrompts>([
+    [1, structuredClone(initialPrompts)], [2, structuredClone(initialPrompts)],
+  ]);
   const second = structuredClone(initialWorkspace);
   second.project = { ...second.project, id: 2, name: '第二个项目' };
   second.categories = [{ ord: 1, name: '独立分类', description: '第二项目', method: '摘录原文' }];
@@ -43,6 +56,35 @@ export async function mockWorkspace(page: Page) {
     const request = route.request();
     const path = new URL(request.url()).pathname.replace('/api', '');
     const method = request.method();
+    const promptProject = path.match(/^\/project\/(\d+)\/(prompts|prompt_preview)$/);
+    if (promptProject) {
+      const id = Number(promptProject[1]);
+      if (promptProject[2] === 'prompts') {
+        if (method === 'PUT') projectPrompts.set(id, request.postDataJSON());
+        return route.fulfill({ json: projectPrompts.get(id) });
+      }
+      const { operation, prompts, requirements } = request.postDataJSON();
+      const current = id === 1 ? workspace : second;
+      const render = (text: string) => text.replace('$categories', JSON.stringify(current.categories))
+        .replace('$field_protocol', JSON.stringify(current.fields)).replace('$requirements', requirements)
+        .replace('$checked_facts', JSON.stringify(current.facts.filter((fact) => fact.checked)))
+        .replace('$checked_definitions', JSON.stringify(current.definitions.filter((definition) => definition.checked)));
+      const messages: unknown[] = [{ role: 'user', content: [
+        { type: 'input_file', file_id: operation === 'validate' ? '<待上传的方案文件>' : 'file-test' },
+        { type: 'input_text', text: render(operation === 'validate' ? prompts.validation : prompts.extract) },
+      ] }];
+      if (['revise_facts', 'generate', 'revise_definitions'].includes(operation)) {
+        messages.push({ role: 'assistant', content: JSON.stringify({ facts: current.facts }) });
+      }
+      if (['generate', 'revise_definitions'].includes(operation)) {
+        messages.push({ role: 'user', content: [{ type: 'input_text', text: render(prompts.generate) }] });
+      }
+      if (operation === 'revise_definitions') messages.push({ role: 'assistant', content: JSON.stringify({ definitions: current.definitions }) });
+      if (['revise_facts', 'revise_definitions'].includes(operation)) {
+        messages.push({ role: 'user', content: [{ type: 'input_text', text: render(prompts[operation]) }] });
+      }
+      return route.fulfill({ json: { instructions: prompts.system, messages } });
+    }
     if (path === '/auth/me') return route.fulfill({ json: { id: 1, username: 'reviewer' } });
     if (path === '/auth/logout') return route.fulfill({ json: { status: 'success' } });
     if (path === '/projects') return route.fulfill({ json: [workspace.project, second.project] });

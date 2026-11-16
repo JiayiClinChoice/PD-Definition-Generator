@@ -1,6 +1,10 @@
 ﻿from __future__ import annotations
 
 from typing import Annotated, Literal
+from string import Template
+from datetime import datetime
+from ai.prompt import Operation, PROMPT_VARIABLES
+from openai.types.responses.response_input_param import ResponseInputParam
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -65,6 +69,57 @@ class ValidationResult(BaseModel):
 class RequirementsUpdateRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
     requirements: Annotated[str, Field(min_length=1)]
+
+
+class ProjectPrompts(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    system: str = Field(min_length=1)
+    validation: str = Field(min_length=1)
+    extract: str = Field(min_length=1)
+    revise_facts: str = Field(min_length=1)
+    generate: str = Field(min_length=1)
+    revise_definitions: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def valid_templates(self) -> "ProjectPrompts":
+        for key, content in self.model_dump().items():
+            template = Template(content)
+            if not content.strip() or not template.is_valid():
+                raise ValueError(f"{key}: 提示词不能为空且必须是有效模板；字面量 $ 请写为 $$。")
+            variables = set(template.get_identifiers())
+            if variables != PROMPT_VARIABLES[key]:
+                raise ValueError(f"{key}: 必须保留变量 {sorted(PROMPT_VARIABLES[key])}，且不能添加未知变量。")
+        return self
+
+
+class PromptPreviewRequest(BaseModel):
+    operation: Operation
+    prompts: ProjectPrompts
+    requirements: str = ""
+
+    @model_validator(mode="after")
+    def require_revision_instructions(self) -> "PromptPreviewRequest":
+        if self.operation in {"revise_facts", "revise_definitions"} and not self.requirements.strip():
+            raise ValueError("修订要求不能为空。")
+        return self
+
+
+class PromptPreview(BaseModel):
+    instructions: str
+    messages: ResponseInputParam
+
+
+class AIInteractionOut(ORMModel):
+    id: int
+    project_id: int
+    operation: str
+    model: str
+    created_at: datetime
+    duration_ms: int | None
+    status: str
+    conversation: list[dict]
+    response: dict | None
+    error: str | None
 
 
 class PDCategoryUpdate(BaseModel):

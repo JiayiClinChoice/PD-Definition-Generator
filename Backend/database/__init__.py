@@ -3,7 +3,7 @@
 from collections.abc import AsyncIterator
 from typing import Any
 
-from sqlalchemy import MetaData, event
+from sqlalchemy import MetaData, event, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -58,3 +58,17 @@ from . import models
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        from ai.prompt import default_prompts
+
+        project_ids = (await conn.execute(select(models.Project.id))).scalars().all()
+        existing = set((await conn.execute(
+            select(models.ProjectPrompt.project_id, models.ProjectPrompt.key)
+        )).all())
+        missing = [
+            {"project_id": project_id, "key": key, "content": content}
+            for project_id in project_ids
+            for key, content in default_prompts().items()
+            if (project_id, key) not in existing
+        ]
+        if missing:
+            await conn.execute(insert(models.ProjectPrompt), missing)

@@ -1,22 +1,25 @@
 import os
+import json
 import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
+from contextlib import contextmanager
 
 # Tests never open the application database or call an external AI service.
 TEMP = tempfile.TemporaryDirectory(prefix="pd-workspace-tests-")
 DB_PATH = Path(TEMP.name) / "test.db"
 os.environ["DATABASE_PATH"] = str(DB_PATH)
-os.environ["GPT_API_KEY"] = "test-only"
-os.environ["GPT_API_URL"] = "https://example.invalid/v1"
-os.environ["GPT_MODEL"] = "test-only"
+os.environ["AGENT_API_KEY"] = "test-only"
+os.environ["AGENT_API_URL"] = "https://example.invalid/v1"
+os.environ["AGENT_MODEL"] = "test-only"
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from httpx import ASGITransport, AsyncClient
+from httpx import ASGITransport, AsyncClient, MockTransport, Response, ReadTimeout
+from openai import AsyncOpenAI
 
 from app.application import create_app
 from configs import settings
@@ -79,6 +82,163 @@ class WorkspaceTests(unittest.TestCase):
     def configure(self, project_id):
         response = self.client.put(f"/project/{project_id}/pd_categories", json={"categories": CATEGORIES})
         self.assertEqual(response.status_code, 200, response.text)
+
+    @contextmanager
+    def ai_transport(self, handler):
+        ai = AsyncOpenAI(
+            api_key="test-only", base_url="https://example.invalid/v1", max_retries=0,
+            http_client=AsyncClient(transport=MockTransport(handler)),
+        )
+        try:
+            with patch.object(self.client.app.state, "client", ai):
+                yield
+        finally:
+            self.client.portal.call(ai.close)
+
+    def ai_response(self, payload, status="completed"):
+        return Response(200, json={
+            "id": "resp-test", "object": "response", "created_at": 1,
+            "status": status, "model": "test-only",
+            "output": [{
+                "id": "msg-test", "type": "message", "role": "assistant", "status": "completed",
+                "content": [{"type": "output_text", "text": json.dumps(payload), "annotations": []}],
+            }],
+            "error": None, "incomplete_details": None, "instructions": None,
+            "metadata": {}, "parallel_tool_calls": True, "tools": [], "tool_choice": "auto",
+        })
+
+    def test_project_prompts_defaults_validation_ownership_and_migration(self):
+        from database import init_db
+        from ai.prompt import default_prompts
+
+        self.register()
+        project_id = self.create()
+        second = self.create()
+        url = f"/project/{project_id}/prompts"
+        prompts = self.client.get(url).json()
+        self.assertEqual(prompts, default_prompts())
+        prompts["system"] = "Custom system; cost $$100"
+        self.assertEqual(self.client.put(url, json=prompts).status_code, 200)
+        for invalid in ["", " ", "$unknown", "${broken", "No category variable"]:
+            rejected = {**prompts, "extract": invalid}
+            self.assertEqual(self.client.put(url, json=rejected).status_code, 422)
+        self.assertEqual(self.client.get(url).json(), prompts)
+        self.assertEqual(self.client.get(f"/project/{second}/prompts").json(), default_prompts())
+        self.sql("DELETE FROM project_prompts WHERE project_id=? AND key='generate'", (project_id,))
+        self.client.portal.call(init_db)
+        self.client.portal.call(init_db)
+        self.assertEqual(self.client.get(url).json(), prompts)
+        self.assertEqual(self.sql("SELECT COUNT(*) FROM project_prompts WHERE project_id=?", (project_id,)), [(6,)])
+        self.sql("UPDATE projects SET agent_operate_token='busy', agent_operate_started_at=CURRENT_TIMESTAMP WHERE id=?", (project_id,))
+        self.assertEqual(self.client.put(url, json=prompts).status_code, 409)
+        self.register("bob")
+        for method, suffix, body in [
+            ("GET", "prompts", None),
+            ("PUT", "prompts", prompts),
+            ("POST", "prompt_preview", {"operation": "validate", "prompts": prompts}),
+            ("GET", "ai_interactions", None),
+        ]:
+            response = self.client.request(method, f"/project/{project_id}/{suffix}", json=body)
+            self.assertEqual(response.status_code, 404, response.text)
+
+    def test_all_ai_operations_use_saved_prompts_and_log_exact_conversations(self):
+        self.register()
+        project_id = self.create()
+        self.configure(project_id)
+        prompts = self.client.get(f"/project/{project_id}/prompts").json()
+        prompts["system"] = "Custom system; literal $$"
+        prompts["extract"] = "Extract using $categories"
+        self.assertEqual(self.client.put(f"/project/{project_id}/prompts", json=prompts).status_code, 200)
+        calls = []
+
+        def handler(request):
+            self.assertEqual(self.sql("SELECT status FROM ai_interactions ORDER BY id DESC LIMIT 1"), [("pending",)])
+            body = json.loads(request.content)
+            calls.append(body)
+            if len(calls) == 1:
+                return self.ai_response({"file_valid": True, "meta_data": METADATA})
+            if len(calls) <= 3:
+                return self.ai_response({"facts": FACTS})
+            return self.ai_response({"definitions": DEFINITIONS})
+
+        operations = [
+            ("validate", "POST", "attach", None, ["user"]),
+            ("extract", "POST", "extract_facts", None, ["user"]),
+            ("revise_facts", "PUT", "revise_facts", {"requirements": "Keep details"}, ["user", "assistant", "user"]),
+            ("generate", "POST", "generate_definitions", None, ["user", "assistant", "user"]),
+            ("revise_definitions", "PUT", "revise_definitions", {"requirements": "Keep details"}, ["user", "assistant", "user", "assistant", "user"]),
+        ]
+        with self.ai_transport(handler), patch("app.services.project_workflows.upload_file", new=AsyncMock(return_value="file-test")):
+            for index, (operation, method, suffix, body, roles) in enumerate(operations):
+                preview_response = self.client.post(f"/project/{project_id}/prompt_preview", json={
+                    "operation": operation, "prompts": prompts,
+                    "requirements": (body or {}).get("requirements", ""),
+                })
+                self.assertEqual(preview_response.status_code, 200, preview_response.text)
+                preview = preview_response.json()
+                self.assertEqual(len(calls), index)
+                if operation == "validate":
+                    response = self.client.post(f"/project/{project_id}/attach", files={"file": ("file.txt", b"test", "text/plain")})
+                    preview["messages"][0]["content"][0]["file_id"] = "file-test"
+                else:
+                    response = self.client.request(method, f"/project/{project_id}/{suffix}", json=body)
+                self.assertEqual(response.status_code, 200, response.text)
+                sent = calls[-1]
+                self.assertEqual(sent["instructions"], "Custom system; literal $")
+                self.assertEqual(sent["input"], preview["messages"])
+                self.assertEqual([item["role"] for item in sent["input"]], roles)
+                records = self.client.get(f"/project/{project_id}/ai_interactions").json()
+                record = records[0]
+                self.assertEqual(record["operation"], operation)
+                self.assertEqual(record["conversation"][:-1], [{"role": "system", "content": sent["instructions"]}, *sent["input"]])
+                self.assertEqual(record["conversation"][-1]["role"], "assistant")
+                self.assertEqual(record["conversation"][-1], record["response"]["output"][0])
+                self.assertEqual(record["status"], "completed")
+                self.assertIsNone(record["error"])
+                self.assertGreaterEqual(record["duration_ms"], 0)
+                self.assertEqual(record["model"], settings.agent_model)
+                self.assertIsNone(self.sql("SELECT agent_operate_token FROM projects WHERE id=?", (project_id,))[0][0])
+        self.assertEqual(len(calls), 5)
+        page = self.client.get(f"/project/{project_id}/ai_interactions?limit=2&offset=1").json()
+        self.assertEqual([item["operation"] for item in page], ["generate", "revise_facts"])
+        self.assertEqual(self.client.get(f"/project/{project_id}/ai_interactions?limit=101").status_code, 422)
+        with patch("ai.service.delete_file", new=AsyncMock()):
+            self.assertEqual(self.client.delete(f"/project/{project_id}").status_code, 200)
+        self.assertEqual(self.sql("SELECT COUNT(*) FROM project_prompts"), [(0,)])
+        self.assertEqual(self.sql("SELECT COUNT(*) FROM ai_interactions"), [(0,)])
+
+    def test_ai_failures_keep_raw_responses_history_duration_and_existing_results(self):
+        self.register()
+        project_id = self.create()
+        self.configure(project_id)
+        self.sql("UPDATE projects SET file_id='file-test', file_valid=1 WHERE id=?", (project_id,))
+        self.assertEqual(self.client.put(f"/project/{project_id}/facts", json={"facts": FACTS}).status_code, 200)
+
+        def timeout(request):
+            raise ReadTimeout("Test timeout", request=request)
+
+        cases = [
+            (lambda _: Response(503, json={"error": {"message": "Unavailable"}}), 502, "Unavailable"),
+            (timeout, 504, "timeout"),
+            (lambda _: self.ai_response({"facts": FACTS}, "incomplete"), 502, "not completed"),
+            (lambda _: self.ai_response({"facts": "not a list"}), 502, "parsing failed"),
+        ]
+        for index, (handler, status, message) in enumerate(cases, 1):
+            with self.ai_transport(handler), patch("ai.service.perf_counter", side_effect=[100.0, 100.125]):
+                response = self.client.post(f"/project/{project_id}/extract_facts")
+            self.assertEqual(response.status_code, status, response.text)
+            records = self.client.get(f"/project/{project_id}/ai_interactions").json()
+            self.assertEqual(len(records), index)
+            record = records[0]
+            self.assertEqual(record["status"], "failed")
+            self.assertIn(message, record["error"])
+            self.assertEqual(record["duration_ms"], 125)
+            self.assertEqual(record["conversation"][0]["role"], "system")
+            if index >= 3:
+                self.assertEqual(record["response"]["id"], "resp-test")
+                self.assertEqual(record["conversation"][-1]["role"], "assistant")
+            self.assertEqual(self.workspace(project_id)["facts"], FACTS)
+            self.assertIsNone(self.sql("SELECT agent_operate_token FROM projects")[0][0])
 
     def test_authentication_cookie_restore_logout_and_no_header_impersonation(self):
         self.assertEqual(self.client.get("/projects", headers={"X-User-Id": "alice"}).status_code, 401)
@@ -371,7 +531,7 @@ class WorkspaceTests(unittest.TestCase):
             self.assertEqual(response.status_code, 409)
 
     def test_account_and_project_management_work_without_ai(self):
-        with patch.object(settings, "gpt_api_key", ""), self.assertLogs("app.application", level="WARNING"):
+        with patch.object(settings, "agent_api_key", ""), self.assertLogs("app.application", level="WARNING"):
             with TestClient(create_app(), headers=HEADERS) as client:
                 self.assertEqual(client.post("/auth/register", json={"username": "no-ai", "password": "secure-password"}).status_code, 200)
                 response = client.post("/project/initial", params={"name": "No AI study"})

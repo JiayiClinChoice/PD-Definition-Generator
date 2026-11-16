@@ -90,3 +90,19 @@ export interface User {
   id: number;
   username: string;
 }
+
+export interface ProjectPrompts {
+  system: string;
+  validation: string;
+  extract: string;
+  revise_facts: string;
+  generate: string;
+  revise_definitions: string;
+}
+
+export type AIOperation = 'validate' | 'extract' | 'revise_facts' | 'generate' | 'revise_definitions';
+
+export interface PromptPreview {
+  instructions: string;
+  messages: Array<{ role: string; content: string | Array<{ type: string; text?: string; file_id?: string }> }>;
+}
